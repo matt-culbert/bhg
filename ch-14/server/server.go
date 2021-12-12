@@ -2,13 +2,18 @@ package main
 
 import (
 	"context"
-	"errors"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"io/ioutil"
 	"log"
-	"net"
+	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/blackhat-go/bhg/ch-14/grpcapi"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 func loadTLSCredentials() (credentials.TransportCredentials, error) {
